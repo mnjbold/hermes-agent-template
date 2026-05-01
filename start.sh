@@ -16,4 +16,6 @@ fi
 
 [ ! -f /data/.hermes/.env ] && touch /data/.hermes/.env
 
+rm -f /data/.hermes/gateway.pid
+
 exec python /app/server.py
