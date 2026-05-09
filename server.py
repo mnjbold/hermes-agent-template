@@ -101,6 +101,7 @@ ENV_VARS = [
     ("STEPFUN_API_KEY",          "Step Plan",                "provider",  True),
     ("AI_GATEWAY_API_KEY",       "Vercel AI Gateway",        "provider",  True),
     ("GEMINI_API_KEY",           "Google AI Studio",         "provider",  True),
+    ("OLLAMA_API_BASE",          "Ollama API Base URL",      "provider",  False),
     ("PARALLEL_API_KEY",         "Parallel (search)",        "tool",      True),
     ("FIRECRAWL_API_KEY",        "Firecrawl (scrape)",       "tool",      True),
     ("TAVILY_API_KEY",           "Tavily (search)",          "tool",      True),
