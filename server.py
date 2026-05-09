@@ -42,6 +42,7 @@ from starlette.responses import (
     JSONResponse,
     RedirectResponse,
     Response,
+    StreamingResponse,
 )
 from starlette.routing import Route, WebSocketRoute
 from starlette.templating import Jinja2Templates
@@ -591,6 +592,7 @@ dash = Dashboard()
 # Shared async HTTP client for the reverse proxy. Created lazily so we pick up
 # the running event loop, torn down in lifespan.
 _http_client: httpx.AsyncClient | None = None
+_api_http_client: httpx.AsyncClient | None = None
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -601,6 +603,23 @@ def get_http_client() -> httpx.AsyncClient:
             follow_redirects=False,
         )
     return _http_client
+
+
+def _get_api_client() -> httpx.AsyncClient:
+    """Dedicated httpx client for the gateway API server proxy.
+
+    Uses a much longer timeout (5 min) because Hermes agent sessions run
+    tool calls, web searches, code execution, etc., and can take minutes
+    to produce a response. The regular 30-second proxy client is far too
+    aggressive for this workload.
+    """
+    global _api_http_client
+    if _api_http_client is None:
+        _api_http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=10.0),
+            follow_redirects=False,
+        )
+    return _api_http_client
 
 
 # ── Route handlers ────────────────────────────────────────────────────────────
@@ -929,8 +948,18 @@ async def route_setup_404(request: Request) -> Response:
 # machine-to-machine callers don't need a browser session.
 
 async def _proxy_to_api_server(request: Request) -> Response:
-    """Forward /v1/* requests to the gateway API server (no cookie auth)."""
-    client = get_http_client()
+    """Forward /v1/* requests to the gateway API server (no cookie auth).
+
+    Uses streaming to support:
+      - SSE (text/event-stream) for /v1/chat/completions with stream=true
+      - Long-running agent sessions (tool calls, web search, code exec)
+        that can take minutes before the first byte arrives.
+
+    The dedicated _get_api_client() has a 5-minute timeout to accommodate
+    Hermes agent workloads. Responses are streamed chunk-by-chunk so that
+    SSE events reach the caller (Open WebUI, curl, etc.) in real time.
+    """
+    client = _get_api_client()
     target = f"{API_SERVER_URL}{request.url.path}"
     if request.url.query:
         target = f"{target}?{request.url.query}"
@@ -942,18 +971,17 @@ async def _proxy_to_api_server(request: Request) -> Response:
     body = await request.body()
 
     try:
-        upstream = await client.request(
-            request.method,
-            target,
-            headers=req_headers,
-            content=body,
+        req = client.build_request(
+            request.method, target, headers=req_headers, content=body,
         )
+        upstream = await client.send(req, stream=True)
     except (httpx.ConnectError, httpx.ConnectTimeout):
         return JSONResponse(
             {"error": {"message": "Gateway API server not available", "type": "server_error"}},
             status_code=503,
         )
     except httpx.RequestError as e:
+        print(f"[api-proxy] request error for {request.method} {request.url.path}: {e!r}", flush=True)
         return JSONResponse(
             {"error": {"message": f"Proxy error: {e}", "type": "server_error"}},
             status_code=502,
@@ -962,10 +990,48 @@ async def _proxy_to_api_server(request: Request) -> Response:
     resp_headers = {
         k: v for k, v in upstream.headers.items()
         if k.lower() not in HOP_BY_HOP
-        and k.lower() not in ("content-encoding", "content-length")
+        and k.lower() not in ("content-encoding", "content-length", "transfer-encoding")
     }
+
+    content_type = upstream.headers.get("content-type", "")
+    is_sse = "text/event-stream" in content_type
+    is_chunked = "chunked" in upstream.headers.get("transfer-encoding", "")
+
+    if is_sse or is_chunked:
+        # Stream SSE / chunked responses through so events reach the
+        # caller in real time instead of being buffered until the stream
+        # ends (which could be minutes for an agent session).
+        async def _stream():
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            except httpx.RequestError as e:
+                print(f"[api-proxy] stream error: {e!r}", flush=True)
+            finally:
+                await upstream.aclose()
+
+        media = content_type.split(";")[0].strip() if content_type else None
+        return StreamingResponse(
+            _stream(),
+            status_code=upstream.status_code,
+            headers=resp_headers,
+            media_type=media,
+        )
+
+    # Non-streaming: read the full body, then close.
+    try:
+        content = await upstream.aread()
+    except httpx.RequestError as e:
+        await upstream.aclose()
+        print(f"[api-proxy] read error for {request.method} {request.url.path}: {e!r}", flush=True)
+        return JSONResponse(
+            {"error": {"message": f"Proxy read error: {e}", "type": "server_error"}},
+            status_code=502,
+        )
+    await upstream.aclose()
+
     return Response(
-        content=upstream.content,
+        content=content,
         status_code=upstream.status_code,
         headers=resp_headers,
     )
@@ -1003,10 +1069,13 @@ async def lifespan(app):
             dash.stop(),
             return_exceptions=True,
         )
-        global _http_client
+        global _http_client, _api_http_client
         if _http_client is not None:
             await _http_client.aclose()
             _http_client = None
+        if _api_http_client is not None:
+            await _api_http_client.aclose()
+            _api_http_client = None
 
 
 # ── WebSocket reverse proxy ──────────────────────────────────────────────────
