@@ -185,6 +185,18 @@ def write_config_yaml(data: dict[str, str]) -> None:
         provider = "auto"
         base_url_line = ""
 
+    # Optionally disable tools for the API server to let small models
+    # (e.g. 3B) respond without a giant tool-calling system prompt.
+    # Set HERMES_API_TOOLS=none in .env to disable all tools.
+    api_tools = data.get("HERMES_API_TOOLS", os.environ.get("HERMES_API_TOOLS", ""))
+    if api_tools.lower() == "none":
+        toolset_block = (
+            "\nplatform_toolsets:\n"
+            "  api_server: []\n"
+        )
+    else:
+        toolset_block = ""
+
     config_path.write_text(
         f"model:\n"
         f'  default: "{model}"\n'
@@ -200,6 +212,7 @@ def write_config_yaml(data: dict[str, str]) -> None:
         f"  max_iterations: 50\n"
         f"\n"
         f"data_dir: \"{HERMES_HOME}\"\n"
+        f"{toolset_block}"
     )
 
 
