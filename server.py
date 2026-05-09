@@ -1048,6 +1048,77 @@ async def route_health_api(request: Request) -> Response:
     return await _proxy_to_api_server(request)
 
 
+async def route_diag_ollama(request: Request) -> Response:
+    """Diagnostic: test Ollama connectivity from inside this container.
+
+    Reads config.yaml, extracts the base_url, sends a simple chat completion
+    request to Ollama, and returns the result.  Useful for debugging agent
+    session hangs where the LLM call never completes.
+    """
+    import yaml as _yaml_diag
+
+    diag: dict = {}
+
+    # 1) Read config.yaml
+    config_path = Path(HERMES_HOME) / "config.yaml"
+    if config_path.exists():
+        try:
+            cfg = _yaml_diag.safe_load(config_path.read_text()) or {}
+            diag["config_yaml"] = cfg
+        except Exception as e:
+            diag["config_yaml_error"] = str(e)
+    else:
+        diag["config_yaml"] = "NOT FOUND"
+
+    # 2) Read .env relevant keys
+    env_data = read_env(ENV_FILE)
+    diag["env"] = {
+        "LLM_MODEL": env_data.get("LLM_MODEL", ""),
+        "OLLAMA_API_BASE": env_data.get("OLLAMA_API_BASE", ""),
+        "HERMES_INFERENCE_PROVIDER": env_data.get("HERMES_INFERENCE_PROVIDER", os.environ.get("HERMES_INFERENCE_PROVIDER", "")),
+        "API_SERVER_PORT": env_data.get("API_SERVER_PORT", ""),
+        "API_SERVER_HOST": env_data.get("API_SERVER_HOST", ""),
+        "HERMES_HOME": HERMES_HOME,
+    }
+
+    # 3) Test Ollama connectivity
+    model_cfg = cfg.get("model", {}) if isinstance(diag.get("config_yaml"), dict) else {}
+    base_url = (model_cfg.get("base_url") or "").rstrip("/")
+    model_name = model_cfg.get("default", "")
+
+    if base_url:
+        diag["ollama_test"] = {"base_url": base_url, "model": model_name}
+        import httpx as _hx_diag
+        # Test /models
+        try:
+            async with _hx_diag.AsyncClient(timeout=_hx_diag.Timeout(15.0, connect=5.0)) as client:
+                r = await client.get(f"{base_url}/models")
+                diag["ollama_test"]["models_status"] = r.status_code
+                diag["ollama_test"]["models_body"] = r.json() if r.status_code == 200 else r.text[:500]
+        except Exception as e:
+            diag["ollama_test"]["models_error"] = repr(e)
+
+        # Test /chat/completions
+        try:
+            async with _hx_diag.AsyncClient(timeout=_hx_diag.Timeout(30.0, connect=5.0)) as client:
+                r = await client.post(
+                    f"{base_url}/chat/completions",
+                    json={"model": model_name, "messages": [{"role": "user", "content": "Hi"}], "stream": False},
+                )
+                diag["ollama_test"]["chat_status"] = r.status_code
+                body_text = r.text[:1000]
+                try:
+                    diag["ollama_test"]["chat_body"] = r.json()
+                except Exception:
+                    diag["ollama_test"]["chat_body"] = body_text
+        except Exception as e:
+            diag["ollama_test"]["chat_error"] = repr(e)
+    else:
+        diag["ollama_test"] = "NO_BASE_URL"
+
+    return JSONResponse(diag)
+
+
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 async def auto_start():
     if is_config_complete():
@@ -1256,6 +1327,7 @@ routes = [
     # Must be BEFORE the catch-all so /v1/* doesn't fall through to the dashboard.
     Route("/v1/{path:path}",                    route_v1,            methods=ANY_METHOD),
     Route("/health/detailed",                   route_health_api),
+    Route("/setup/api/diag/ollama",             route_diag_ollama),
 
     # Reverse-proxy hermes's dashboard WebSockets (Chat tab + sidecar).
     # WebSocketRoute is matched independently of HTTP routes, so order
