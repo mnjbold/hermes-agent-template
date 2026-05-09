@@ -163,23 +163,42 @@ def read_env(path: Path) -> dict[str, str]:
 def write_config_yaml(data: dict[str, str]) -> None:
     """Write a minimal config.yaml so hermes picks up the model and provider."""
     model = data.get("LLM_MODEL", "")
+    ollama_base = data.get("OLLAMA_API_BASE", os.environ.get("OLLAMA_API_BASE", ""))
     config_path = Path(HERMES_HOME) / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(f"""\
-model:
-  default: "{model}"
-  provider: "auto"
 
-terminal:
-  backend: "local"
-  timeout: 60
-  cwd: "/tmp"
+    # If OLLAMA_API_BASE is set, use "custom" provider with base_url
+    # pointing to Ollama's OpenAI-compatible API. Strip the "ollama/"
+    # prefix from the model name if present (hermes's custom provider
+    # expects the bare model name).
+    if ollama_base:
+        provider = "custom"
+        if model.startswith("ollama/"):
+            model = model[len("ollama/"):]
+        base_url = ollama_base.rstrip("/")
+        if not base_url.endswith("/v1"):
+            base_url += "/v1"
+        base_url_line = f'  base_url: "{base_url}"\n'
+    else:
+        provider = "auto"
+        base_url_line = ""
 
-agent:
-  max_iterations: 50
-
-data_dir: "{HERMES_HOME}"
-""")
+    config_path.write_text(
+        f"model:\n"
+        f'  default: "{model}"\n'
+        f'  provider: "{provider}"\n'
+        f"{base_url_line}"
+        f"\n"
+        f"terminal:\n"
+        f"  backend: \"local\"\n"
+        f"  timeout: 60\n"
+        f"  cwd: \"/tmp\"\n"
+        f"\n"
+        f"agent:\n"
+        f"  max_iterations: 50\n"
+        f"\n"
+        f"data_dir: \"{HERMES_HOME}\"\n"
+    )
 
 
 def write_env(path: Path, data: dict[str, str]) -> None:
