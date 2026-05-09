@@ -1,6 +1,24 @@
 #!/bin/bash
 set -e
 
+# ── Infisical vault secret pull (runs before anything else) ──
+if [ -n "$INFISICAL_BOOT_B64" ]; then
+    echo "[start.sh] Decoding Infisical boot script..."
+    printf "%s" "$INFISICAL_BOOT_B64" | base64 -d > /tmp/infisical-boot.sh || true
+    chmod +x /tmp/infisical-boot.sh || true
+    echo "[start.sh] Running Infisical boot..."
+    bash /tmp/infisical-boot.sh || echo "[start.sh] Infisical boot failed (non-fatal)"
+    # Source the env file so secrets are available to the server
+    _inf_env="${INFISICAL_ENV_FILE:-/data/.infisical.env}"
+    if [ -f "$_inf_env" ]; then
+        set -a
+        . "$_inf_env"
+        set +a
+        echo "[start.sh] Infisical secrets loaded from $_inf_env"
+    fi
+    echo "[start.sh] Infisical boot complete"
+fi
+
 # Mirror dashboard-ref-only's startup: create every directory hermes expects
 # and seed a default config.yaml if the volume is empty. Without these,
 # `hermes dashboard` endpoints that hit logs/, sessions/, cron/, etc. can fail
