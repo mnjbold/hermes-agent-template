@@ -58,6 +58,10 @@ PAIRING_TTL = 3600
 # Native Hermes dashboard — runs on loopback, fronted by our reverse proxy.
 HERMES_DASHBOARD_HOST = "127.0.0.1"
 HERMES_DASHBOARD_PORT = int(os.environ.get("HERMES_DASHBOARD_PORT", "9119"))
+
+# Hermes gateway API server — OpenAI-compatible /v1/* endpoints for Open WebUI etc.
+API_SERVER_PORT = int(os.environ.get("API_SERVER_PORT", "8643"))
+API_SERVER_URL = f"http://127.0.0.1:{API_SERVER_PORT}"
 HERMES_DASHBOARD_URL = f"http://{HERMES_DASHBOARD_HOST}:{HERMES_DASHBOARD_PORT}"
 
 # Mirror dashboard-ref-only/auth_proxy.py: strip only `host` (httpx sets it)
@@ -894,6 +898,70 @@ async def route_setup_404(request: Request) -> Response:
     return Response("Not Found", status_code=404, media_type="text/plain")
 
 
+# ── Reverse proxy → Hermes gateway API server (/v1/*) ─────────────────────────
+#
+# The gateway's OpenAI-compatible API server runs on a separate loopback port
+# (API_SERVER_PORT, default 8643). Railway only exposes one public port per
+# service, so we proxy /v1/* through the admin server. This lets Open WebUI,
+# LobeChat, etc. hit the standard Railway domain and port.
+#
+# Auth: the API server has its own Bearer-token auth (API_SERVER_KEY), which
+# is passed through as-is. We bypass our cookie auth for /v1/* so that
+# machine-to-machine callers don't need a browser session.
+
+async def _proxy_to_api_server(request: Request) -> Response:
+    """Forward /v1/* requests to the gateway API server (no cookie auth)."""
+    client = get_http_client()
+    target = f"{API_SERVER_URL}{request.url.path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    req_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in HOP_BY_HOP
+    }
+    body = await request.body()
+
+    try:
+        upstream = await client.request(
+            request.method,
+            target,
+            headers=req_headers,
+            content=body,
+        )
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return JSONResponse(
+            {"error": {"message": "Gateway API server not available", "type": "server_error"}},
+            status_code=503,
+        )
+    except httpx.RequestError as e:
+        return JSONResponse(
+            {"error": {"message": f"Proxy error: {e}", "type": "server_error"}},
+            status_code=502,
+        )
+
+    resp_headers = {
+        k: v for k, v in upstream.headers.items()
+        if k.lower() not in HOP_BY_HOP
+        and k.lower() not in ("content-encoding", "content-length")
+    }
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=resp_headers,
+    )
+
+
+async def route_v1(request: Request) -> Response:
+    """Proxy /v1/* to the gateway API server. No cookie auth — API key only."""
+    return await _proxy_to_api_server(request)
+
+
+async def route_health_api(request: Request) -> Response:
+    """Proxy /health/detailed to the gateway API server (unauthenticated)."""
+    return await _proxy_to_api_server(request)
+
+
 # ── App lifecycle ─────────────────────────────────────────────────────────────
 async def auto_start():
     if is_config_complete():
@@ -1093,6 +1161,12 @@ routes = [
 
     # /setup/* typos return a real 404 — not a silent proxy fallthrough.
     Route("/setup/{path:path}",                 route_setup_404,     methods=ANY_METHOD),
+
+    # OpenAI-compatible API proxy → gateway API server on loopback:API_SERVER_PORT.
+    # No cookie auth — the API server enforces its own Bearer-token auth.
+    # Must be BEFORE the catch-all so /v1/* doesn't fall through to the dashboard.
+    Route("/v1/{path:path}",                    route_v1,            methods=ANY_METHOD),
+    Route("/health/detailed",                   route_health_api),
 
     # Reverse-proxy hermes's dashboard WebSockets (Chat tab + sidecar).
     # WebSocketRoute is matched independently of HTTP routes, so order
