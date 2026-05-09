@@ -1318,6 +1318,7 @@ routes = [
     Route("/setup/api/pairing/deny",            api_pairing_deny,    methods=["POST"]),
     Route("/setup/api/pairing/approved",        api_pairing_approved),
     Route("/setup/api/pairing/revoke",          api_pairing_revoke,  methods=["POST"]),
+    Route("/setup/api/diag/ollama",             route_diag_ollama),
 
     # /setup/* typos return a real 404 — not a silent proxy fallthrough.
     Route("/setup/{path:path}",                 route_setup_404,     methods=ANY_METHOD),
@@ -1327,7 +1328,6 @@ routes = [
     # Must be BEFORE the catch-all so /v1/* doesn't fall through to the dashboard.
     Route("/v1/{path:path}",                    route_v1,            methods=ANY_METHOD),
     Route("/health/detailed",                   route_health_api),
-    Route("/setup/api/diag/ollama",             route_diag_ollama),
 
     # Reverse-proxy hermes's dashboard WebSockets (Chat tab + sidecar).
     # WebSocketRoute is matched independently of HTTP routes, so order
