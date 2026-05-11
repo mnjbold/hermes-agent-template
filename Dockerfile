@@ -59,6 +59,31 @@ RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/h
 COPY requirements.txt /app/requirements.txt
 RUN uv pip install --system --no-cache -r /app/requirements.txt
 
+# === Composio CLI integration (from hermes-composio addon) ============
+# Installs the composio CLI binary + bakes the universal skill bundle.
+# boot-composio.sh (called from start.sh) mirrors the skill into /data
+# on every boot and non-interactively logs Composio in if
+# COMPOSIO_USER_API_KEY is set in env.
+# ====================================================================
+ARG COMPOSIO_CLI_VERSION="@composio/cli@0.2.29-beta.242"
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends unzip && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://composio.dev/install -o /tmp/composio_install.sh && \
+    bash /tmp/composio_install.sh "$COMPOSIO_CLI_VERSION" && \
+    ln -sf /root/.composio/composio /usr/local/bin/composio && \
+    rm /tmp/composio_install.sh && \
+    composio --version > /etc/composio-cli-version
+
+COPY skills/composio-cli /opt/hermes-skills/composio-cli
+COPY scripts/boot-composio.sh /usr/local/bin/boot-composio.sh
+RUN chmod +x /usr/local/bin/boot-composio.sh
+# ======================================================================
+
+
+
 RUN mkdir -p /data/.hermes
 
 COPY server.py /app/server.py
