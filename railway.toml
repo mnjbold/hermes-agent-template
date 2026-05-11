@@ -3,6 +3,7 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+requiredMountPath = "/data"
 startCommand = "/app/start.sh"
 healthcheckPath = "/health"
 healthcheckTimeout = 300

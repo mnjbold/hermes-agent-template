@@ -1,0 +1,21 @@
+interface:
+  display_name: "Composio CLI"
+  short_description: "Execute-first help for the Composio CLI inside Hermes Agent"
+  default_prompt: |
+    Use $composio-cli to operate any of 1000+ third-party services via the
+    Composio CLI (already installed in this container at /usr/local/bin/composio).
+
+    Decision order:
+      1. composio execute <SLUG>      (known slug)
+      2. composio search "<task>"     (unknown slug)
+      3. composio link <toolkit>      (toolkit not connected)
+      4. composio execute --parallel  (multiple independent calls)
+      5. composio run '<inline TS>'   (scripting/loops/Promise.all)
+      6. composio proxy <url>         (raw API)
+
+  # Hermes Agent specifics
+  shell_binary: "/usr/local/bin/composio"
+  skill_root: "/data/.hermes/skills/composio-cli"
+  credentials_env:
+    - COMPOSIO_USER_API_KEY
+    - COMPOSIO_ORG

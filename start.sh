@@ -43,4 +43,13 @@ fi
 # container), so removing the file unconditionally is safe.
 rm -f /data/.hermes/gateway.pid
 
+# === Composio integration (from hermes-composio addon) ================
+# Mirrors the composio-cli skill bundle into /data/.hermes/skills and
+# logs Composio in non-interactively if COMPOSIO_USER_API_KEY is set.
+# Safe to run on every boot - idempotent.
+# ====================================================================
+if [ -x /usr/local/bin/boot-composio.sh ]; then
+  /usr/local/bin/boot-composio.sh || echo "[start.sh] boot-composio failed (non-fatal)"
+fi
+
 exec python /app/server.py
